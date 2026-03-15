@@ -1,5 +1,6 @@
 """Core handler — matches peptide names and returns price comparisons."""
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 
@@ -13,9 +14,18 @@ from bot.services import llm
 
 logger = logging.getLogger(__name__)
 
+SEARCH_MESSAGES = [
+    "Searching {count} vendors for <b>{name}</b>...",
+    "Finding the best prices on <b>{name}</b> across {count} vendors...",
+    "Looking up <b>{name}</b> across {count} vendors...",
+]
+
 
 def create_handler(db: PeptideDB, matcher: PeptideMatcher):
     """Create the message handler with injected dependencies."""
+
+    # Count enabled vendors once for the loading message
+    vendor_count = "50+"
 
     async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = update.message.text.strip()
@@ -26,8 +36,8 @@ def create_handler(db: PeptideDB, matcher: PeptideMatcher):
         peptide, confidence = matcher.match(text)
 
         if confidence >= 85:
-            # High confidence — show results
-            await show_results(update, db, peptide)
+            # High confidence — show dosage picker
+            await show_dosage_picker(update, db, peptide, vendor_count)
 
         elif confidence >= 65:
             # Medium confidence — ask for confirmation
@@ -35,7 +45,7 @@ def create_handler(db: PeptideDB, matcher: PeptideMatcher):
                 [
                     InlineKeyboardButton(
                         f"Yes, show {peptide['name']}",
-                        callback_data=f"show:{peptide['id']}",
+                        callback_data=f"pick:{peptide['id']}",
                     ),
                     InlineKeyboardButton("No", callback_data="cancel"),
                 ]
@@ -65,38 +75,130 @@ def create_handler(db: PeptideDB, matcher: PeptideMatcher):
         query = update.callback_query
         await query.answer()
 
-        if query.data == "cancel":
+        data = query.data
+
+        if data == "cancel":
             await query.edit_message_text("No problem. Type another peptide name to search.")
             return
 
-        if query.data.startswith("show:"):
-            peptide_id = query.data.split(":", 1)[1]
-            # Find peptide by ID
+        # "pick:{peptide_id}" — show dosage picker
+        if data.startswith("pick:"):
+            peptide_id = data.split(":", 1)[1]
             peptide = next((p for p in db.peptides if p["id"] == peptide_id), None)
             if peptide:
-                await show_results_edit(query, db, peptide)
+                await show_dosage_picker_edit(query, db, peptide, vendor_count)
             else:
                 await query.edit_message_text("Peptide not found. Try again.")
+            return
+
+        # "dose:{peptide_id}:{mg}" — show results for specific dose
+        if data.startswith("dose:"):
+            parts = data.split(":", 2)
+            peptide_id, dose_mg = parts[1], float(parts[2])
+            peptide = next((p for p in db.peptides if p["id"] == peptide_id), None)
+            if peptide:
+                await show_results_with_loading(query, db, peptide, vendor_count, dose_mg)
+            return
+
+        # "all:{peptide_id}" — show all dosages
+        if data.startswith("all:"):
+            peptide_id = data.split(":", 1)[1]
+            peptide = next((p for p in db.peptides if p["id"] == peptide_id), None)
+            if peptide:
+                await show_results_with_loading(query, db, peptide, vendor_count, None)
+            return
 
     return handle_message, handle_callback
 
 
-async def show_results(update: Update, db: PeptideDB, peptide: dict):
-    """Fetch products and send the formatted comparison."""
-    products = db.get_products(peptide["id"])
-    text, keyboard = format_price_message(peptide, products)
+async def show_dosage_picker(update, db: PeptideDB, peptide: dict, vendor_count: str):
+    """Show available dosages as inline buttons."""
+    dosages = db.get_dosages(peptide["id"])
+
+    if not dosages:
+        # No products found — show empty result
+        msg = await update.message.reply_text(
+            f"Searching {vendor_count} vendors for <b>{escape_md(peptide['name'])}</b>...",
+            parse_mode="HTML",
+        )
+        await asyncio.sleep(1.5)
+        text, keyboard = format_price_message(peptide, [])
+        await msg.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+        return
+
+    if len(dosages) == 1:
+        # Only one dosage — skip picker, go straight to results
+        msg = await update.message.reply_text(
+            f"Searching {vendor_count} vendors for <b>{escape_md(peptide['name'])}</b>...",
+            parse_mode="HTML",
+        )
+        await asyncio.sleep(2)
+        products = db.get_products_by_dose(peptide["id"], dosages[0]["mg"])
+        text, keyboard = format_price_message(peptide, products)
+        await msg.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+        return
+
+    # Multiple dosages — show picker
+    buttons = []
+    for d in dosages[:5]:
+        label = f"{d['mg']}mg ({d['vendors']} vendor{'s' if d['vendors'] != 1 else ''})"
+        buttons.append([InlineKeyboardButton(label, callback_data=f"dose:{peptide['id']}:{d['mg']}")])
+
+    buttons.append([InlineKeyboardButton("Show all dosages", callback_data=f"all:{peptide['id']}")])
+
+    keyboard = InlineKeyboardMarkup(buttons)
     await update.message.reply_text(
-        text, parse_mode="HTML", reply_markup=keyboard
+        f"<b>{escape_md(peptide['name'])}</b>\n\n"
+        f"Which dosage are you looking for?",
+        parse_mode="HTML",
+        reply_markup=keyboard,
     )
 
 
-async def show_results_edit(query, db: PeptideDB, peptide: dict):
-    """Same as show_results but edits the existing message (for callbacks)."""
-    products = db.get_products(peptide["id"])
-    text, keyboard = format_price_message(peptide, products)
+async def show_dosage_picker_edit(query, db: PeptideDB, peptide: dict, vendor_count: str):
+    """Same as show_dosage_picker but edits existing message."""
+    dosages = db.get_dosages(peptide["id"])
+
+    if not dosages or len(dosages) == 1:
+        await show_results_with_loading(query, db, peptide, vendor_count, dosages[0]["mg"] if dosages else None)
+        return
+
+    buttons = []
+    for d in dosages[:5]:
+        label = f"{d['mg']}mg ({d['vendors']} vendor{'s' if d['vendors'] != 1 else ''})"
+        buttons.append([InlineKeyboardButton(label, callback_data=f"dose:{peptide['id']}:{d['mg']}")])
+
+    buttons.append([InlineKeyboardButton("Show all dosages", callback_data=f"all:{peptide['id']}")])
+
+    keyboard = InlineKeyboardMarkup(buttons)
     await query.edit_message_text(
-        text, parse_mode="HTML", reply_markup=keyboard
+        f"<b>{escape_md(peptide['name'])}</b>\n\n"
+        f"Which dosage are you looking for?",
+        parse_mode="HTML",
+        reply_markup=keyboard,
     )
+
+
+async def show_results_with_loading(query, db: PeptideDB, peptide: dict, vendor_count: str, dose_mg: float | None):
+    """Show a loading message, then edit it with results."""
+    # Show loading
+    await query.edit_message_text(
+        f"Searching {vendor_count} vendors for <b>{escape_md(peptide['name'])}</b>"
+        + (f" {dose_mg}mg" if dose_mg else "")
+        + "...",
+        parse_mode="HTML",
+    )
+
+    await asyncio.sleep(2)
+
+    # Fetch results
+    if dose_mg:
+        products = db.get_products_by_dose(peptide["id"], dose_mg)
+    else:
+        products = db.get_products(peptide["id"])
+
+    text, keyboard = format_price_message(peptide, products)
+    await query.edit_message_text(text, parse_mode="HTML", reply_markup=keyboard)
 
 
 def log_query(update: Update, text: str, peptide: dict | None, confidence: float):

@@ -42,6 +42,25 @@ class PeptideDB:
             if not any(s in (p.get("product_url") or "").lower() for s in skip)
         ]
 
+    def get_dosages(self, peptide_id: str) -> list[dict]:
+        """Get available dosages for a peptide with vendor counts."""
+        products = self.get_products(peptide_id, limit=100)
+        dosages: dict[float, int] = {}
+        for p in products:
+            qty = p.get("quantity_mg")
+            if qty:
+                dosages[qty] = dosages.get(qty, 0) + 1
+        return sorted(
+            [{"mg": mg, "vendors": count} for mg, count in dosages.items()],
+            key=lambda d: d["vendors"],
+            reverse=True,
+        )
+
+    def get_products_by_dose(self, peptide_id: str, dose_mg: float, limit: int = 8) -> list[dict]:
+        """Get products for a specific dosage."""
+        all_products = self.get_products(peptide_id, limit=50)
+        return [p for p in all_products if p.get("quantity_mg") == dose_mg][:limit]
+
     def get_vendor(self, vendor_id: str) -> dict | None:
         res = (
             self.client.table("vendors")
