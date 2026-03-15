@@ -30,7 +30,7 @@ class PeptideDB:
             .eq("is_blend", False)
             .eq("in_stock", True)
             .gte("price", 1)
-            .neq("price_per_mg", "null")
+            .filter("price_per_mg", "not.is", "null")
             .order("price_per_mg")
             .limit(limit)
             .execute()
