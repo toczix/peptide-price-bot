@@ -41,8 +41,8 @@ def create_handler(db: PeptideDB, matcher: PeptideMatcher):
                 ]
             ])
             await update.message.reply_text(
-                f"Did you mean *{escape_md(peptide['name'])}*?",
-                parse_mode="MarkdownV2",
+                f"Did you mean <b>{escape_md(peptide['name'])}</b>?",
+                parse_mode="HTML",
                 reply_markup=keyboard,
             )
 
@@ -86,7 +86,7 @@ async def show_results(update: Update, db: PeptideDB, peptide: dict):
     products = db.get_products(peptide["id"])
     text, keyboard = format_price_message(peptide, products)
     await update.message.reply_text(
-        text, parse_mode="MarkdownV2", reply_markup=keyboard
+        text, parse_mode="HTML", reply_markup=keyboard
     )
 
 
@@ -95,7 +95,7 @@ async def show_results_edit(query, db: PeptideDB, peptide: dict):
     products = db.get_products(peptide["id"])
     text, keyboard = format_price_message(peptide, products)
     await query.edit_message_text(
-        text, parse_mode="MarkdownV2", reply_markup=keyboard
+        text, parse_mode="HTML", reply_markup=keyboard
     )
 
 

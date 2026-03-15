@@ -1,13 +1,8 @@
-"""Format peptide comparison results for Telegram."""
+"""Format peptide comparison results for Telegram using HTML."""
 
-import re
+from html import escape
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from bot.config import SITE_URL
-
-
-def escape_md(text: str) -> str:
-    """Escape special characters for Telegram MarkdownV2."""
-    return re.sub(r"([_*\[\]()~`>#+\-=|{}.!])", r"\\\1", str(text))
 
 
 def build_vendor_url(product: dict) -> str:
@@ -23,10 +18,15 @@ def build_vendor_url(product: dict) -> str:
     return base
 
 
+def escape_md(text: str) -> str:
+    """HTML-escape text for Telegram HTML parse mode."""
+    return escape(str(text))
+
+
 def format_price_message(peptide: dict, products: list[dict]) -> tuple[str, InlineKeyboardMarkup | None]:
     """Format a peptide comparison message with vendor buttons.
 
-    Returns (message_text, keyboard).
+    Returns (message_text, keyboard). Uses HTML parse mode.
     """
     name = peptide["name"]
     slug = peptide["slug"]
@@ -34,10 +34,10 @@ def format_price_message(peptide: dict, products: list[dict]) -> tuple[str, Inli
 
     if not products:
         text = (
-            f"*{escape_md(name)}*\n\n"
-            f"No in\\-stock products found right now\\.\n"
-            f"Check back later or view on the site\\.\n\n"
-            f"_Powered by_ [peptide\\-compare\\.com]({SITE_URL}/peptides/{slug})"
+            f"<b>{escape_md(name)}</b>\n\n"
+            f"No in-stock products found right now.\n"
+            f"Check back later or view on the site.\n\n"
+            f'<i>Powered by</i> <a href="{SITE_URL}/peptides/{slug}">peptide-compare.com</a>'
         )
         return text, None
 
@@ -57,11 +57,11 @@ def format_price_message(peptide: dict, products: list[dict]) -> tuple[str, Inli
             products = dose_products
 
     # Build message
-    lines = [f"*{escape_md(name)}*"]
+    lines = [f"<b>{escape_md(name)}</b>"]
     if category:
-        lines.append(f"_{escape_md(category)}_")
+        lines.append(f"<i>{escape_md(category)}</i>")
     if featured_dose:
-        lines.append(f"Showing {escape_md(str(featured_dose))}mg")
+        lines.append(f"Showing {featured_dose}mg")
     lines.append("")
 
     # Vendor rows
@@ -75,10 +75,10 @@ def format_price_message(peptide: dict, products: list[dict]) -> tuple[str, Inli
         rating = vendor.get("finnrick_avg_score")
 
         price_str = f"${price:.2f}" if price else "N/A"
-        ppm_str = f" \\(${price_per_mg:.2f}/mg\\)" if price_per_mg else ""
-        rating_str = f" \\| {escape_md(f'{rating:.1f}')}/10" if rating else ""
+        ppm_str = f" (${price_per_mg:.2f}/mg)" if price_per_mg else ""
+        rating_str = f" | {rating:.1f}/10" if rating else ""
 
-        lines.append(f"{escape_md(vname)} — *{escape_md(price_str)}*{ppm_str}{rating_str}")
+        lines.append(f"{escape_md(vname)} — <b>{price_str}</b>{ppm_str}{rating_str}")
 
         # Vendor link button
         url = build_vendor_url(p)
@@ -89,18 +89,18 @@ def format_price_message(peptide: dict, products: list[dict]) -> tuple[str, Inli
         if vendor.get("coupon_code"):
             desc = vendor.get("coupon_description", "")
             desc_str = f" ({desc})" if desc else ""
-            coupons.append(f"`{escape_md(vendor['coupon_code'])}`{escape_md(desc_str)} at {escape_md(vname)}")
+            coupons.append(f"<code>{escape_md(vendor['coupon_code'])}</code>{escape_md(desc_str)} at {escape_md(vname)}")
 
     # Coupon section
     if coupons:
         lines.append("")
-        lines.append("*Coupons:*")
+        lines.append("<b>Coupons:</b>")
         for c in coupons:
             lines.append(f"  {c}")
 
     # Footer
     lines.append("")
-    lines.append(f"_Powered by_ [peptide\\-compare\\.com]({SITE_URL}/peptides/{slug})")
+    lines.append(f'<i>Powered by</i> <a href="{SITE_URL}/peptides/{slug}">peptide-compare.com</a>')
 
     keyboard = InlineKeyboardMarkup(buttons) if buttons else None
     return "\n".join(lines), keyboard
